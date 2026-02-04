@@ -117,11 +117,15 @@ class Message(BaseModel):
     Fields as per GUVI specification:
     - sender: "scammer" or "user"
     - text: Message content
-    - timestamp: Epoch time format in ms (can be int or string)
+    - timestamp: Epoch time format in milliseconds (e.g., 1770005528731)
     """
     sender: str = Field(..., description="Message sender: 'scammer' or 'user'")
     text: str = Field(..., description="Message content")
-    timestamp: Union[str, int] = Field(..., description="Epoch time in milliseconds")
+    timestamp: Union[int, str] = Field(
+        ..., 
+        description="Epoch time in milliseconds (e.g., 1770005528731)",
+        json_schema_extra={"example": 1770005528731}
+    )
     
     def get_timestamp_ms(self) -> int:
         """Get timestamp as integer milliseconds."""
@@ -181,7 +185,7 @@ class IncomingRequest(BaseModel):
                 "message": {
                     "sender": "scammer",
                     "text": "Your bank account has been blocked. Click here to verify.",
-                    "timestamp": 1706900000000
+                    "timestamp": 1770005528731
                 },
                 "conversationHistory": [],
                 "metadata": {
