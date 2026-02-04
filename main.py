@@ -129,30 +129,15 @@ class Message(BaseModel):
     Fields as per GUVI specification:
     - sender: "scammer" or "user"
     - text: Message content
-    - timestamp: Epoch time format in milliseconds (e.g., 1770005528731)
+    - timestamp: ISO-8601 formatted timestamp
     """
     sender: str = Field(..., description="Message sender: 'scammer' or 'user'")
     text: str = Field(..., description="Message content")
-    timestamp: Union[int, str] = Field(
+    timestamp: str = Field(
         ..., 
-        description="Epoch time in milliseconds (e.g., 1770005528731)",
-        json_schema_extra={"example": 1770005528731}
+        description="ISO-8601 formatted timestamp (e.g., '2026-02-04T10:30:00Z')",
+        json_schema_extra={"example": "2026-02-04T10:30:00Z"}
     )
-    
-    def get_timestamp_ms(self) -> int:
-        """Get timestamp as integer milliseconds."""
-        if isinstance(self.timestamp, int):
-            return self.timestamp
-        try:
-            return int(self.timestamp)
-        except ValueError:
-            # If it's an ISO string, convert to epoch ms
-            from datetime import datetime
-            try:
-                dt = datetime.fromisoformat(self.timestamp.replace('Z', '+00:00'))
-                return int(dt.timestamp() * 1000)
-            except Exception:
-                return int(datetime.utcnow().timestamp() * 1000)
 
 
 class Metadata(BaseModel):
@@ -197,7 +182,7 @@ class IncomingRequest(BaseModel):
                 "message": {
                     "sender": "scammer",
                     "text": "Your bank account has been blocked. Click here to verify.",
-                    "timestamp": 1770005528731
+                    "timestamp": "2026-02-04T10:30:00Z"
                 },
                 "conversationHistory": [],
                 "metadata": {
