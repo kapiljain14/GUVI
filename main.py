@@ -197,25 +197,45 @@ class IncomingRequest(BaseModel):
         }
 
 
+class EngagementMetrics(BaseModel):
+    """Metrics about the conversation engagement."""
+    engagementDurationSeconds: int = Field(default=0, description="Duration of engagement in seconds")
+    totalMessagesExchanged: int = Field(default=0, description="Total messages in conversation")
+
+
 class AgentResponse(BaseModel):
     """
-    Response from the honeypot agent.
-    
-    Fields:
-    - status: "success" or "error"
-    - reply: The agent's response message with fraud detection info
-    
-    Reply format when fraud detected:
-    "Agent reply text | FRAUD_DETECTED: true | CONFIDENCE: 85% | SCAM_TYPE: urgency, threat | RISK_LEVEL: high"
+    Response from the honeypot agent as per GUVI specification Section 8.
     """
     status: str = Field(..., description="Response status: 'success' or 'error'")
-    reply: str = Field(..., description="Agent response with fraud detection info appended")
+    reply: str = Field(..., description="Agent's conversational response")
+    scamDetected: bool = Field(default=False, description="Whether scam was detected")
+    confidence: float = Field(default=0.0, description="Detection confidence (0-1)")
+    scamTypes: list[str] = Field(default_factory=list, description="Types of scam detected")
+    riskLevel: str = Field(default="safe", description="Risk level: safe, low, medium, high, critical")
+    engagementMetrics: Optional[EngagementMetrics] = Field(default=None, description="Engagement metrics")
+    extractedIntelligence: Optional[dict] = Field(default=None, description="Extracted intelligence data")
+    agentNotes: Optional[str] = Field(default=None, description="Notes about scammer behavior")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "success",
-                "reply": "What? My account is blocked? Which bank are you calling from? | FRAUD_DETECTED: true | CONFIDENCE: 85% | SCAM_TYPE: bank impersonation, urgency, threat | RISK_LEVEL: high"
+                "reply": "What? My account is blocked? Which bank are you calling from?",
+                "scamDetected": True,
+                "confidence": 0.85,
+                "scamTypes": ["bank_fraud", "urgency"],
+                "riskLevel": "high",
+                "engagementMetrics": {
+                    "engagementDurationSeconds": 420,
+                    "totalMessagesExchanged": 18
+                },
+                "extractedIntelligence": {
+                    "bankAccounts": [],
+                    "upiIds": ["scammer@upi"],
+                    "phishingLinks": []
+                },
+                "agentNotes": "Scammer used urgency tactics"
             }
         }
 
@@ -2145,24 +2165,49 @@ async def process_message(
         risk_level = get_risk_level(session.scam_confidence, session.scam_detected)
         confidence_percent = int(session.scam_confidence * 100)
         
-        # Build human-readable fraud warning with clear structure (single line)
+        # Build agent reply
         if session.scam_detected:
             emoji = get_warning_emoji(risk_level)
             risk_label = get_risk_label(risk_level)
             scam_desc = get_scam_description(session.scam_types)
             
-            full_reply = (
+            agent_reply = (
                 f"{emoji} SCAM DETECTED: {risk_label} ({confidence_percent}% confidence). "
                 f"Tactics Used: {scam_desc.capitalize()}. "
                 f"Action: Don't click any links, don't share personal info—block and report immediately."
             )
         else:
-            full_reply = "✅ SAFE: No scam detected. This message appears to be legitimate."
+            agent_reply = "✅ SAFE: No scam detected. This message appears to be legitimate."
         
-        # Return response with human-readable fraud warning
+        # Build extracted intelligence
+        extracted_intel = {
+            "bankAccounts": session.intelligence.bankAccounts,
+            "upiIds": session.intelligence.upiIds,
+            "phishingLinks": session.intelligence.phishingLinks,
+            "phoneNumbers": session.intelligence.phoneNumbers,
+            "suspiciousKeywords": session.intelligence.suspiciousKeywords
+        }
+        
+        # Build agent notes
+        agent_notes = "; ".join(session.agent_notes) if session.agent_notes else ""
+        if session.scam_detected:
+            tactics = ", ".join(session.scam_types) if session.scam_types else "unknown"
+            agent_notes = f"Scammer used {tactics} tactics. {agent_notes}"
+        
+        # Return response as per GUVI specification Section 8
         return AgentResponse(
             status="success",
-            reply=full_reply
+            reply=agent_reply,
+            scamDetected=session.scam_detected,
+            confidence=session.scam_confidence,
+            scamTypes=session.scam_types,
+            riskLevel=risk_level,
+            engagementMetrics=EngagementMetrics(
+                engagementDurationSeconds=0,  # Would need timing tracking
+                totalMessagesExchanged=session.total_messages
+            ),
+            extractedIntelligence=extracted_intel,
+            agentNotes=agent_notes if agent_notes else None
         )
         
     except Exception as e:
