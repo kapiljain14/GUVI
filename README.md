@@ -71,7 +71,7 @@ Content-Type: application/json
   "message": {
     "sender": "scammer",
     "text": "Your bank account will be blocked today. Verify immediately.",
-    "timestamp": "2026-01-21T10:15:30Z"
+    "timestamp": 1770005528731
   },
   "conversationHistory": [],
   "metadata": {
@@ -89,18 +89,18 @@ Content-Type: application/json
   "message": {
     "sender": "scammer",
     "text": "Share your UPI ID to avoid suspension.",
-    "timestamp": "2026-01-21T10:17:10Z"
+    "timestamp": 1770005529000
   },
   "conversationHistory": [
     {
       "sender": "scammer",
       "text": "Your bank account will be blocked today. Verify immediately.",
-      "timestamp": "2026-01-21T10:15:30Z"
+      "timestamp": 1770005528731
     },
     {
       "sender": "user",
       "text": "Oh no! Why is my account being blocked?",
-      "timestamp": "2026-01-21T10:16:10Z"
+      "timestamp": 1770005528900
     }
   ],
   "metadata": {
@@ -382,7 +382,7 @@ curl -X POST http://localhost:8000/api/honeypot \
     "message": {
       "sender": "scammer",
       "text": "Your bank account will be blocked. Share OTP immediately.",
-      "timestamp": "2026-01-21T10:15:30Z"
+      "timestamp": 1770005528731
     },
     "conversationHistory": [],
     "metadata": {"channel": "SMS", "language": "English", "locale": "IN"}
@@ -410,7 +410,7 @@ response = requests.post(url, headers=headers, json={
     "message": {
         "sender": "scammer",
         "text": "Urgent! Your SBI account is blocked. Call +919876543210 now!",
-        "timestamp": "2026-01-21T10:15:30Z"
+        "timestamp": 1770005528731
     },
     "conversationHistory": [],
     "metadata": {"channel": "SMS", "language": "English", "locale": "IN"}
@@ -915,6 +915,4 @@ The system automatically extracts:
 ---
 
 ## License
-India
-
-MIT
+@kapil
