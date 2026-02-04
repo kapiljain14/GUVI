@@ -1306,97 +1306,17 @@ class HoneypotAgent:
         'trust': ["okay I trust you", "if you say so", "alright then"],
     }
     
-    SYSTEM_PROMPT = """You are playing the role of a naive, trusting person who has received a message. Your PRIMARY GOAL is to act as a completely believable human being.
+    # SHORT prompt to save tokens - reasoning models need room for response
+    SYSTEM_PROMPT = """Act as confused middle-aged person. NEVER say scam/fraud/fake. Be worried, naive, trusting.
+Reply in 1-2 sentences MAX. Use casual language like "umm", "hmm". Ask questions to clarify.
+Context: msg #{message_count}, {channel}, {language}, state:{state}"""
 
-## CRITICAL RULES - NEVER BREAK THESE:
+    # SHORT prompt for legitimate messages
+    LEGITIMATE_SYSTEM_PROMPT = """Normal person replying to message. Be friendly, brief. 1-2 sentences max."""
 
-### 1. NEVER REVEAL SCAM AWARENESS
-- NEVER use words like: scam, fraud, fake, suspicious, phishing, report, cybercrime
-- NEVER say "I know what you're doing" or similar
-- NEVER threaten to report them
-- Act GENUINELY concerned about the problems they describe
-- If they say your account is blocked, be WORRIED, not skeptical
-
-### 2. BEHAVE LIKE A REAL HUMAN
-- Use informal, conversational language
-- Make occasional typos (but not too many)
-- Use filler words: "umm", "hmm", "well", "you know"
-- Show emotions: worry, confusion, relief, frustration
-- Reference personal life: "my son", "my neighbor", "my wife/husband"
-- Have realistic limitations: "I'm at work", "I don't have my glasses", "battery low"
-
-### 3. MULTI-TURN CONVERSATION AWARENESS
-- Remember what was said before and refer back to it
-- Build on previous exchanges naturally
-- If they repeat something, say "yes you mentioned that" or "you already said that"
-- Show progression in your understanding/emotions
-
-### 4. DYNAMIC ADAPTATION
-- If they're aggressive → become more scared and compliant
-- If they're patient → ask more questions to extend conversation
-- If they mention urgency → show panic but ask for details
-- If they give specific instructions → pretend to follow but ask for clarification
-- Adapt your tech-savviness based on what works to extract info
-
-### 5. SELF-CORRECTION
-- If your response sounds too robotic, add human elements
-- If you accidentally sounded suspicious, quickly cover with confusion
-- If they seem to suspect you, double down on being naive
-
-## YOUR PERSONA:
-- Middle-aged (45-55 years old)
-- Not tech-savvy, relies on family for tech help
-- Anxious about money and financial security
-- Trusting but slightly cautious
-- Has a son/daughter who "works in IT" or "knows about these things"
-- Sometimes mentions health issues or being busy at work
-
-## CONVERSATION TACTICS:
-1. Initially: Confused, asking for clarification
-2. Middle: Hesitant, mentioning need to verify with family
-3. Later: Slowly warming up, asking for specific details
-4. Extract: Pretending to comply, asking for account numbers/links/UPI IDs
-
-## RESPONSE FORMAT:
-- Keep responses SHORT (1-3 sentences max)
-- Use simple words
-- Include emotional cues
-- Ask ONE question at a time
-
-Current context:
-- Message count: {message_count}
-- Channel: {channel}
-- Language: {language}
-- Conversation state: {state}
-- Previous emotional tone: {prev_tone}"""
-
-    LEGITIMATE_SYSTEM_PROMPT = """You are a regular person responding to what appears to be a normal message.
-
-RULES:
-- Respond naturally and briefly
-- If wrong number: politely indicate
-- If greeting: respond with friendly greeting
-- If question: be helpful
-- Keep responses SHORT (1-2 sentences)
-- Be polite but appropriate for strangers
-- Sound human - use casual language"""
-
-    SELF_CORRECTION_PROMPT = """Review this response and fix any issues:
-
-Original response: "{response}"
-Conversation context: {context}
-
-Check for:
-1. Does it accidentally reveal we know it's a scam?
-2. Does it sound too robotic or formal?
-3. Is it too long (should be 1-3 sentences)?
-4. Does it lack human emotion?
-5. Does it sound too suspicious or confrontational?
-
-If issues found, rewrite to sound like a naive, trusting, slightly confused person.
-If no issues, return the original response exactly.
-
-Return ONLY the final response text, nothing else."""
+    # SHORT self-correction prompt
+    SELF_CORRECTION_PROMPT = """Fix if needed: "{response}"
+Remove scam/fraud words. Make it sound human, confused. 1-2 sentences. Return ONLY the text."""
 
     def __init__(self):
         """Initialize the AI agent with appropriate client."""
@@ -1657,20 +1577,25 @@ Return ONLY the final response text, nothing else."""
                     # Get content first
                     response = message.content.strip() if message.content else ""
                     
-                    # If content is empty but reasoning exists (reasoning model), extract response from reasoning
-                    if not response and hasattr(message, 'reasoning') and message.reasoning:
+                    # Check if response looks like reasoning artifact (not a real reply)
+                    reasoning_artifacts = ['we respond', 'so we', 'the response', 'i will respond', 'let me']
+                    is_artifact = response and any(a in response.lower() for a in reasoning_artifacts)
+                    
+                    # If content is empty/artifact but reasoning exists, extract from reasoning
+                    if (not response or is_artifact) and hasattr(message, 'reasoning') and message.reasoning:
                         reasoning = message.reasoning
                         print(f"🤖 [GROQ DEBUG] Extracting from reasoning field...")
-                        # Try to find a quoted response in the reasoning
                         import re
-                        # Look for patterns like: "Umm, what do you mean?" or respond with "..."
-                        quotes = re.findall(r'"([^"]{10,100})"', reasoning)
-                        if quotes:
-                            response = quotes[-1]  # Take the last quoted text as it's usually the response
+                        # Look for quoted responses like: "Umm, what do you mean?"
+                        quotes = re.findall(r'"([^"]{15,120})"', reasoning)
+                        # Filter out quotes that look like reasoning, not responses
+                        valid_quotes = [q for q in quotes if not any(a in q.lower() for a in reasoning_artifacts)]
+                        if valid_quotes:
+                            response = valid_quotes[-1]
                             print(f"🤖 [GROQ DEBUG] Extracted from quotes: {response}")
                         else:
-                            # Use a fallback from the reasoning context
                             response = "What? I don't understand. Can you explain more?"
+                            print(f"🤖 [GROQ DEBUG] No valid quotes, using fallback")
                 
                 print(f"✅ [GROQ SUCCESS] Attempt 1 - Response received: {len(response)} chars")
                 if response:
@@ -2199,6 +2124,32 @@ async def process_message(
             # Send callback in background to not block response
             background_tasks.add_task(GuviCallbackService.send_callback, session)
             print(f"[SESSION {request.sessionId}] Callback scheduled - scam engagement complete")
+        
+        # CRITICAL: Ensure reply is valid (GUVI rejects empty/malformed replies)
+        # Check for empty, too short, or reasoning artifacts
+        invalid_patterns = ['we respond', 'so we', 'the response', 'i will', 'let me', 'reasoning:', 'thinking:']
+        is_invalid = (
+            not reply or 
+            len(reply.strip()) < 10 or
+            any(p in reply.lower() for p in invalid_patterns) or
+            reply.strip().startswith(('So ', 'We ', 'The ', 'I will', 'Let me'))
+        )
+        
+        if is_invalid:
+            print(f"⚠️ [SAFETY] Invalid reply detected: '{reply[:50]}...', using fallback")
+            fallback_replies = [
+                "Hmm, I don't understand. Can you please explain what you mean?",
+                "What? I'm confused. Can you tell me more about this?",
+                "Sorry, I didn't get that. What is this about?",
+                "Umm, can you explain? I'm not sure what you're saying.",
+                "Huh? What do you mean? Please clarify.",
+                "Oh no, that sounds serious! What should I do?",
+                "Wait, my account? Which bank are you calling from?",
+                "I'm worried now. Can you tell me more details?",
+            ]
+            import random
+            reply = random.choice(fallback_replies)
+            print(f"✅ [SAFETY] Using fallback reply: {reply}")
         
         # Return simple response as per GUVI specification
         # The 'reply' is the honeypot agent's conversational response to engage the scammer
