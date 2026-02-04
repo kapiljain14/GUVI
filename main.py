@@ -194,45 +194,19 @@ class IncomingRequest(BaseModel):
         }
 
 
-class EngagementMetrics(BaseModel):
-    """Metrics about the conversation engagement."""
-    engagementDurationSeconds: int = Field(default=0, description="Duration of engagement in seconds")
-    totalMessagesExchanged: int = Field(default=0, description="Total messages in conversation")
-
-
 class AgentResponse(BaseModel):
     """
-    Response from the honeypot agent as per GUVI specification Section 8.
+    Response from the honeypot agent as per GUVI specification.
+    Simple response with status and reply only.
     """
     status: str = Field(..., description="Response status: 'success' or 'error'")
-    reply: str = Field(..., description="Agent's conversational response")
-    scamDetected: bool = Field(default=False, description="Whether scam was detected")
-    confidence: float = Field(default=0.0, description="Detection confidence (0-1)")
-    scamTypes: list[str] = Field(default_factory=list, description="Types of scam detected")
-    riskLevel: str = Field(default="safe", description="Risk level: safe, low, medium, high, critical")
-    engagementMetrics: Optional[EngagementMetrics] = Field(default=None, description="Engagement metrics")
-    extractedIntelligence: Optional[dict] = Field(default=None, description="Extracted intelligence data")
-    agentNotes: Optional[str] = Field(default=None, description="Notes about scammer behavior")
+    reply: str = Field(..., description="Agent's conversational response to continue engagement")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "success",
-                "reply": "What? My account is blocked? Which bank are you calling from?",
-                "scamDetected": True,
-                "confidence": 0.85,
-                "scamTypes": ["bank_fraud", "urgency"],
-                "riskLevel": "high",
-                "engagementMetrics": {
-                    "engagementDurationSeconds": 420,
-                    "totalMessagesExchanged": 18
-                },
-                "extractedIntelligence": {
-                    "bankAccounts": [],
-                    "upiIds": ["scammer@upi"],
-                    "phishingLinks": []
-                },
-                "agentNotes": "Scammer used urgency tactics"
+                "reply": "Why is my account being suspended?"
             }
         }
 
@@ -1955,10 +1929,26 @@ app.add_middleware(
 )
 
 
-# Basic logging middleware
+# Basic logging middleware with request body logging
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         logger.info(f">>> {request.method} {request.url.path}")
+        
+        # Log request body for POST requests
+        if request.method == "POST":
+            body = await request.body()
+            if body:
+                try:
+                    body_str = body.decode('utf-8')
+                    print(f"[REQUEST BODY] {body_str}")
+                except:
+                    print(f"[REQUEST BODY] (binary data)")
+            
+            # Recreate request with body for downstream processing
+            async def receive():
+                return {"type": "http.request", "body": body}
+            request = Request(request.scope, receive)
+        
         start_time = time.time()
         response = await call_next(request)
         process_time = time.time() - start_time
@@ -1973,43 +1963,56 @@ app.add_middleware(LoggingMiddleware)
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc):
-    """Handle validation errors with a cleaner response format."""
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors with details and return error response."""
+    # Print to console for debugging
+    print("=" * 60)
+    print("[VALIDATION ERROR] Request validation failed!")
+    print(f"[VALIDATION ERROR] Errors: {exc.errors()}")
+    
+    # Try to get request body for debugging
+    try:
+        body = await request.body()
+        if body:
+            print(f"[VALIDATION ERROR] Request body: {body.decode('utf-8')}")
+    except:
+        print("[VALIDATION ERROR] Could not read request body")
+    print("=" * 60)
+    
     return JSONResponse(
         status_code=422,
         content={
             "status": "error",
             "reply": "Invalid request format. Please check your request body.",
-            "scamDetected": False,
-            "error": "VALIDATION_ERROR",
-            "details": str(exc.errors())
+            "details": exc.errors()
         }
     )
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request, exc):
     """Handle HTTP exceptions."""
+    print(f"[HTTP ERROR] Status: {exc.status_code}, Detail: {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "status": "error",
-            "reply": str(exc.detail),
-            "scamDetected": False,
-            "error": "HTTP_ERROR"
+            "reply": str(exc.detail)
         }
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Handle unexpected errors."""
+    print(f"[INTERNAL ERROR] {type(exc).__name__}: {exc}")
+    import traceback
+    traceback.print_exc()
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
-            "reply": "An unexpected error occurred. Please try again.",
-            "scamDetected": False,
-            "error": "INTERNAL_ERROR"
+            "reply": "An unexpected error occurred. Please try again."
         }
     )
 
@@ -2154,116 +2157,11 @@ async def process_message(
             background_tasks.add_task(GuviCallbackService.send_callback, session)
             print(f"[SESSION {request.sessionId}] Callback scheduled - scam engagement complete")
         
-        # Determine risk level based on confidence and scam types
-        def get_risk_level(confidence: float, scam_detected: bool) -> str:
-            if not scam_detected:
-                return "safe"
-            if confidence >= 0.8:
-                return "critical"
-            elif confidence >= 0.6:
-                return "high"
-            elif confidence >= 0.4:
-                return "medium"
-            else:
-                return "low"
-        
-        def get_scam_description(scam_types: list[str]) -> str:
-            """Generate human-readable description of scam tactics."""
-            tactics = []
-            
-            # Map scam types to human-readable descriptions
-            if any('urgency' in t.lower() for t in scam_types):
-                tactics.append("urgency tactics")
-            if any('threat' in t.lower() for t in scam_types):
-                tactics.append("threats")
-            if any('credential' in t.lower() or 'otp' in t.lower() or 'password' in t.lower() for t in scam_types):
-                tactics.append("attempts to steal your login details")
-            if any('prize' in t.lower() or 'lottery' in t.lower() or 'winner' in t.lower() for t in scam_types):
-                tactics.append("fake prize/lottery claims")
-            if any('money' in t.lower() or 'transfer' in t.lower() or 'payment' in t.lower() for t in scam_types):
-                tactics.append("requests for money transfer")
-            if any('bank' in t.lower() or 'impersonation' in t.lower() for t in scam_types):
-                tactics.append("impersonation of a trusted organization")
-            if any('link' in t.lower() or 'phishing' in t.lower() for t in scam_types):
-                tactics.append("suspicious links")
-            if any('kyc' in t.lower() for t in scam_types):
-                tactics.append("fake KYC update requests")
-            if any('remote' in t.lower() or 'anydesk' in t.lower() or 'teamviewer' in t.lower() for t in scam_types):
-                tactics.append("remote access scam")
-            if any('legal' in t.lower() or 'arrest' in t.lower() or 'police' in t.lower() for t in scam_types):
-                tactics.append("fake legal threats")
-            
-            if not tactics:
-                tactics.append("suspicious patterns")
-            
-            return " and ".join(tactics[:3])  # Limit to 3 tactics for readability
-        
-        def get_warning_emoji(risk_level: str) -> str:
-            """Get appropriate emoji for risk level."""
-            return {
-                "critical": "🚨",
-                "high": "⚠️",
-                "medium": "⚡",
-                "low": "ℹ️",
-                "safe": "✅"
-            }.get(risk_level, "ℹ️")
-        
-        def get_risk_label(risk_level: str) -> str:
-            """Get human-readable risk label."""
-            return {
-                "critical": "Critical-risk",
-                "high": "High-risk",
-                "medium": "Medium-risk",
-                "low": "Low-risk",
-                "safe": "Safe"
-            }.get(risk_level, "Unknown")
-        
-        risk_level = get_risk_level(session.scam_confidence, session.scam_detected)
-        confidence_percent = int(session.scam_confidence * 100)
-        
-        # Build agent reply
-        if session.scam_detected:
-            emoji = get_warning_emoji(risk_level)
-            risk_label = get_risk_label(risk_level)
-            scam_desc = get_scam_description(session.scam_types)
-            
-            agent_reply = (
-                f"{emoji} SCAM DETECTED: {risk_label} ({confidence_percent}% confidence). "
-                f"Tactics Used: {scam_desc.capitalize()}. "
-                f"Action: Don't click any links, don't share personal info—block and report immediately."
-            )
-        else:
-            agent_reply = "✅ SAFE: No scam detected. This message appears to be legitimate."
-        
-        # Build extracted intelligence
-        extracted_intel = {
-            "bankAccounts": session.intelligence.bankAccounts,
-            "upiIds": session.intelligence.upiIds,
-            "phishingLinks": session.intelligence.phishingLinks,
-            "phoneNumbers": session.intelligence.phoneNumbers,
-            "suspiciousKeywords": session.intelligence.suspiciousKeywords
-        }
-        
-        # Build agent notes
-        agent_notes = "; ".join(session.agent_notes) if session.agent_notes else ""
-        if session.scam_detected:
-            tactics = ", ".join(session.scam_types) if session.scam_types else "unknown"
-            agent_notes = f"Scammer used {tactics} tactics. {agent_notes}"
-        
-        # Return response as per GUVI specification Section 8
+        # Return simple response as per GUVI specification
+        # The 'reply' is the honeypot agent's conversational response to engage the scammer
         return AgentResponse(
             status="success",
-            reply=agent_reply,
-            scamDetected=session.scam_detected,
-            confidence=session.scam_confidence,
-            scamTypes=session.scam_types,
-            riskLevel=risk_level,
-            engagementMetrics=EngagementMetrics(
-                engagementDurationSeconds=0,  # Would need timing tracking
-                totalMessagesExchanged=session.total_messages
-            ),
-            extractedIntelligence=extracted_intel,
-            agentNotes=agent_notes if agent_notes else None
+            reply=reply
         )
         
     except Exception as e:
