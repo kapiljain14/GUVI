@@ -1644,14 +1644,34 @@ Return ONLY the final response text, nothing else."""
                 response_obj = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    max_tokens=150,
+                    max_tokens=500,  # Increased for reasoning models
                     temperature=0.7,
                 )
                 print(f"🤖 [GROQ DEBUG] Response object: {response_obj}")
-                print(f"🤖 [GROQ DEBUG] Choices: {response_obj.choices}")
+                
                 if response_obj.choices:
-                    print(f"🤖 [GROQ DEBUG] Message: {response_obj.choices[0].message}")
-                response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                    message = response_obj.choices[0].message
+                    print(f"🤖 [GROQ DEBUG] Message content: {message.content}")
+                    print(f"🤖 [GROQ DEBUG] Message reasoning: {getattr(message, 'reasoning', None)}")
+                    
+                    # Get content first
+                    response = message.content.strip() if message.content else ""
+                    
+                    # If content is empty but reasoning exists (reasoning model), extract response from reasoning
+                    if not response and hasattr(message, 'reasoning') and message.reasoning:
+                        reasoning = message.reasoning
+                        print(f"🤖 [GROQ DEBUG] Extracting from reasoning field...")
+                        # Try to find a quoted response in the reasoning
+                        import re
+                        # Look for patterns like: "Umm, what do you mean?" or respond with "..."
+                        quotes = re.findall(r'"([^"]{10,100})"', reasoning)
+                        if quotes:
+                            response = quotes[-1]  # Take the last quoted text as it's usually the response
+                            print(f"🤖 [GROQ DEBUG] Extracted from quotes: {response}")
+                        else:
+                            # Use a fallback from the reasoning context
+                            response = "What? I don't understand. Can you explain more?"
+                
                 print(f"✅ [GROQ SUCCESS] Attempt 1 - Response received: {len(response)} chars")
                 if response:
                     print(f"✅ [GROQ SUCCESS] Response: {response}")
@@ -1663,19 +1683,26 @@ Return ONLY the final response text, nothing else."""
             # If empty, try with simplified prompt
             if not response or len(response) < 5:
                 print(f"⚠️ [GROQ RETRY] Trying simplified prompt...")
-                simple_prompt = "You are a confused person receiving a message. Respond naturally in 1-2 sentences. Be worried if they mention account problems. Ask for clarification. Sound human, use casual language."
+                simple_prompt = "Respond in 1-2 short sentences only. Be confused and ask for clarification."
                 simple_messages = [
                     {"role": "system", "content": simple_prompt},
-                    {"role": "user", "content": f"Someone sent me this message: '{current_message}' - How should I respond?"}
+                    {"role": "user", "content": f"Message: '{current_message}' - Reply:"}
                 ]
                 try:
                     response_obj = await self.client.chat.completions.create(
                         model=self.model,
                         messages=simple_messages,
-                        max_tokens=100,
+                        max_tokens=300,
                         temperature=0.5,
                     )
-                    response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                    msg = response_obj.choices[0].message
+                    response = msg.content.strip() if msg.content else ""
+                    # Handle reasoning model
+                    if not response and hasattr(msg, 'reasoning') and msg.reasoning:
+                        import re
+                        quotes = re.findall(r'"([^"]{10,100})"', msg.reasoning)
+                        if quotes:
+                            response = quotes[-1]
                     print(f"✅ [GROQ SUCCESS] Simplified attempt - Response received: {len(response)} chars")
                 except Exception as e2:
                     print(f"⚠️ [GROQ RETRY] Simplified attempt failed: {e2}")
@@ -1687,12 +1714,19 @@ Return ONLY the final response text, nothing else."""
                     response_obj = await self.client.chat.completions.create(
                         model=self.model,
                         messages=[
-                            {"role": "user", "content": f"Reply to this message as a confused, worried person in 1 sentence: '{current_message}'"}
+                            {"role": "user", "content": f"Reply confused in 1 sentence: '{current_message}'"}
                         ],
-                        max_tokens=50,
+                        max_tokens=200,
                         temperature=0.3,
                     )
-                    response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                    msg = response_obj.choices[0].message
+                    response = msg.content.strip() if msg.content else ""
+                    # Handle reasoning model
+                    if not response and hasattr(msg, 'reasoning') and msg.reasoning:
+                        import re
+                        quotes = re.findall(r'"([^"]{10,100})"', msg.reasoning)
+                        if quotes:
+                            response = quotes[-1]
                     print(f"✅ [GROQ SUCCESS] Direct attempt - Response received: {len(response)} chars")
                 except Exception as e3:
                     print(f"⚠️ [GROQ RETRY] Direct attempt failed: {e3}")
