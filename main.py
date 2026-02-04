@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     
     # Alternative: Groq Configuration (faster, cheaper)
     GROQ_API_KEY: str = Field(default="")
-    GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile")
+    GROQ_MODEL: str = Field(default="openai/gpt-oss-20b")
     USE_GROQ: bool = Field(default=False)
     
     # GUVI Callback Configuration
@@ -456,8 +456,16 @@ class HybridScamDetector:
         r'\b(urgent|immediately|today|now|quick|fast|hurry)\b': {
             'weight': 0.15, 'type': 'urgency', 'keyword': 'urgent'
         },
-        r'\b(block(ed)?|suspend(ed)?|deactivat(e|ed)|freez(e|ing)|locked?)\b': {
-            'weight': 0.2, 'type': 'threat', 'keyword': 'account blocked'
+        # Call immediately pattern
+        r'\b(call|contact|dial)\s*(us|this|the)?\s*(number)?\s*(immediately|now|urgent|today)\b': {
+            'weight': 0.25, 'type': 'urgency', 'keyword': 'call immediately'
+        },
+        r'\b(block(ed)?|suspend(ed)?|deactivat(e|ed)|freez(e|ing)|locked?|compromised?|hacked?)\b': {
+            'weight': 0.25, 'type': 'threat', 'keyword': 'account blocked'
+        },
+        # Compromised account pattern
+        r'\b(account|password|data)\s*(has\s*been|is|was)?\s*(compromised|hacked|breached)\b': {
+            'weight': 0.35, 'type': 'security_threat', 'keyword': 'account compromised'
         },
         
         # Action demands
@@ -477,6 +485,17 @@ class HybridScamDetector:
         },
         r'\b(share|send|provide|give)\s*(your|ur|the)?\s*(otp|pin|cvv|password|passcode|mpin)\b': {
             'weight': 0.4, 'type': 'credential_request', 'keyword': 'OTP request'
+        },
+        # Card details request
+        r'\b(share|send|provide|give)\s*(your|ur|the)?\s*(card\s*(number|no|details)|credit\s*card|debit\s*card|cvv)\b': {
+            'weight': 0.45, 'type': 'card_fraud', 'keyword': 'card details request'
+        },
+        # Refund scam
+        r'\b(refund|cashback|reimbursement)\s*(of)?\s*(rs\.?|inr|₹)?\s*\d*\s*(pending|processing|available)\b': {
+            'weight': 0.3, 'type': 'refund_scam', 'keyword': 'refund scam'
+        },
+        r'\b(pending\s*refund|refund\s*(pending|available|processing))\b': {
+            'weight': 0.3, 'type': 'refund_scam', 'keyword': 'refund scam'
         },
         
         # Money related
@@ -672,17 +691,30 @@ Respond with ONLY a JSON object (no markdown, no explanation):
         
         try:
             print(f"🤖 [GROQ API CALL] LLM Validation - Model: {self.llm_model}")
-            response = await self.llm_client.chat.completions.create(
-                model=self.llm_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": context}
-                ],
-                max_tokens=200,
-                temperature=0.1,
-            )
             
-            result_text = response.choices[0].message.content.strip()
+            # Retry logic for better model compatibility
+            result_text = ""
+            for attempt in range(3):
+                try:
+                    response = await self.llm_client.chat.completions.create(
+                        model=self.llm_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": context}
+                        ],
+                        max_tokens=200,
+                        temperature=0.1 + (attempt * 0.1),  # Increase temp on retry
+                    )
+                    result_text = response.choices[0].message.content.strip() if response.choices[0].message.content else ""
+                    if result_text:
+                        print(f"✅ [GROQ LLM] Validation response received: {len(result_text)} chars")
+                        break
+                    print(f"⚠️ [GROQ LLM RETRY] Attempt {attempt+1} returned empty")
+                except Exception as retry_err:
+                    print(f"⚠️ [GROQ LLM RETRY] Attempt {attempt+1} failed: {retry_err}")
+            
+            if not result_text:
+                raise ValueError("Empty LLM validation response")
             # Clean up potential markdown
             result_text = result_text.replace("```json", "").replace("```", "").strip()
             result = json.loads(result_text)
@@ -900,17 +932,31 @@ If not enough information, return empty values."""
         
         try:
             print(f"🤖 [GROQ API CALL] LLM Extraction - Model: {self.llm_model}")
-            response = await self.llm_client.chat.completions.create(
-                model=self.llm_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": conversation}
-                ],
-                max_tokens=200,
-                temperature=0.1,
-            )
             
-            result_text = response.choices[0].message.content.strip()
+            # Retry logic for better model compatibility
+            result_text = ""
+            for attempt in range(3):
+                try:
+                    response = await self.llm_client.chat.completions.create(
+                        model=self.llm_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": conversation}
+                        ],
+                        max_tokens=200,
+                        temperature=0.1 + (attempt * 0.1),
+                    )
+                    result_text = response.choices[0].message.content.strip() if response.choices[0].message.content else ""
+                    if result_text:
+                        print(f"✅ [GROQ LLM] Extraction response received: {len(result_text)} chars")
+                        break
+                    print(f"⚠️ [GROQ LLM RETRY] Extraction attempt {attempt+1} returned empty")
+                except Exception as retry_err:
+                    print(f"⚠️ [GROQ LLM RETRY] Extraction attempt {attempt+1} failed: {retry_err}")
+            
+            if not result_text:
+                return {}
+            
             result_text = result_text.replace("```json", "").replace("```", "").strip()
             return json.loads(result_text)
             
@@ -1595,19 +1641,62 @@ Return ONLY the final response text, nothing else."""
         
         try:
             print(f"🤖 [GROQ API CALL] Agent Response Generation - Model: {self.model}")
-            response_obj = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=150,
-                temperature=0.8,
-            )
-            response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
-            print(f"✅ [GROQ SUCCESS] Response received: {len(response)} chars")
+            
+            # Try with full prompt first
+            response = ""
+            try:
+                response_obj = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=150,
+                    temperature=0.7,
+                )
+                response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                print(f"✅ [GROQ SUCCESS] Attempt 1 - Response received: {len(response)} chars")
+            except Exception as e1:
+                print(f"⚠️ [GROQ RETRY] Attempt 1 failed: {e1}")
+            
+            # If empty, try with simplified prompt
+            if not response or len(response) < 5:
+                print(f"⚠️ [GROQ RETRY] Trying simplified prompt...")
+                simple_prompt = "You are a confused person receiving a message. Respond naturally in 1-2 sentences. Be worried if they mention account problems. Ask for clarification. Sound human, use casual language."
+                simple_messages = [
+                    {"role": "system", "content": simple_prompt},
+                    {"role": "user", "content": f"Someone sent me this message: '{current_message}' - How should I respond?"}
+                ]
+                try:
+                    response_obj = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=simple_messages,
+                        max_tokens=100,
+                        temperature=0.5,
+                    )
+                    response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                    print(f"✅ [GROQ SUCCESS] Simplified attempt - Response received: {len(response)} chars")
+                except Exception as e2:
+                    print(f"⚠️ [GROQ RETRY] Simplified attempt failed: {e2}")
+            
+            # If still empty, try direct question format
+            if not response or len(response) < 5:
+                print(f"⚠️ [GROQ RETRY] Trying direct question format...")
+                try:
+                    response_obj = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "user", "content": f"Reply to this message as a confused, worried person in 1 sentence: '{current_message}'"}
+                        ],
+                        max_tokens=50,
+                        temperature=0.3,
+                    )
+                    response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+                    print(f"✅ [GROQ SUCCESS] Direct attempt - Response received: {len(response)} chars")
+                except Exception as e3:
+                    print(f"⚠️ [GROQ RETRY] Direct attempt failed: {e3}")
             
             # Handle empty response from Groq - raise exception to use fallback
             if not response or len(response) < 5:
-                print(f"⚠️ [GROQ WARNING] Empty or too short response, using fallback")
-                raise ValueError("Empty response from Groq")
+                print(f"⚠️ [GROQ WARNING] All attempts returned empty, using fallback")
+                raise ValueError("Empty response from Groq after retries")
             
             # Self-correction: Check and fix response
             response = await self._self_correct_response(
