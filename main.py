@@ -199,16 +199,19 @@ class AgentResponse(BaseModel):
     
     Fields:
     - status: "success" or "error"
-    - reply: The agent's response message
+    - reply: The agent's response message with fraud detection info
+    
+    Reply format when fraud detected:
+    "Agent reply text | FRAUD_DETECTED: true | CONFIDENCE: 85% | SCAM_TYPE: urgency, threat | RISK_LEVEL: high"
     """
     status: str = Field(..., description="Response status: 'success' or 'error'")
-    reply: str = Field(..., description="The agent's response message to send back")
+    reply: str = Field(..., description="Agent response with fraud detection info appended")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "success",
-                "reply": "What? My account is blocked? Which bank are you calling from?"
+                "reply": "What? My account is blocked? Which bank are you calling from? | FRAUD_DETECTED: true | CONFIDENCE: 85% | SCAM_TYPE: bank impersonation, urgency, threat | RISK_LEVEL: high"
             }
         }
 
@@ -668,6 +671,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
         context += f"Current message: {text}"
         
         try:
+            print(f"🤖 [GROQ API CALL] LLM Validation - Model: {self.llm_model}")
             response = await self.llm_client.chat.completions.create(
                 model=self.llm_model,
                 messages=[
@@ -895,6 +899,7 @@ If not enough information, return empty values."""
         )
         
         try:
+            print(f"🤖 [GROQ API CALL] LLM Extraction - Model: {self.llm_model}")
             response = await self.llm_client.chat.completions.create(
                 model=self.llm_model,
                 messages=[
@@ -1439,6 +1444,10 @@ Return ONLY the final response text, nothing else."""
     
     def _add_human_elements(self, response: str, emotional_tone: str) -> str:
         """Add human-like elements to make response more natural."""
+        # Handle empty response
+        if not response or len(response) < 2:
+            return response
+        
         # Don't modify if already seems natural
         if any(filler in response.lower() for filler in self.FILLER_PHRASES):
             return response
@@ -1476,6 +1485,7 @@ Return ONLY the final response text, nothing else."""
             if self.client:
                 context = " | ".join([f"{m['sender']}: {m['text'][:50]}" for m in conversation_history[-3:]])
                 try:
+                    print(f"🤖 [GROQ API CALL] Self-Correction - Model: {self.model}")
                     correction = await self.client.chat.completions.create(
                         model=self.model,
                         messages=[
@@ -1584,13 +1594,20 @@ Return ONLY the final response text, nothing else."""
         messages.append({"role": "user", "content": current_message})
         
         try:
+            print(f"🤖 [GROQ API CALL] Agent Response Generation - Model: {self.model}")
             response_obj = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=150,
                 temperature=0.8,
             )
-            response = response_obj.choices[0].message.content.strip()
+            response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
+            print(f"✅ [GROQ SUCCESS] Response received: {len(response)} chars")
+            
+            # Handle empty response from Groq - raise exception to use fallback
+            if not response or len(response) < 5:
+                print(f"⚠️ [GROQ WARNING] Empty or too short response, using fallback")
+                raise ValueError("Empty response from Groq")
             
             # Self-correction: Check and fix response
             response = await self._self_correct_response(
@@ -1968,7 +1985,92 @@ async def process_message(
             background_tasks.add_task(GuviCallbackService.send_callback, session)
             print(f"[SESSION {request.sessionId}] Callback scheduled - scam engagement complete")
         
-        return AgentResponse(status="success", reply=reply)
+        # Determine risk level based on confidence and scam types
+        def get_risk_level(confidence: float, scam_detected: bool) -> str:
+            if not scam_detected:
+                return "safe"
+            if confidence >= 0.8:
+                return "critical"
+            elif confidence >= 0.6:
+                return "high"
+            elif confidence >= 0.4:
+                return "medium"
+            else:
+                return "low"
+        
+        def get_scam_description(scam_types: list[str]) -> str:
+            """Generate human-readable description of scam tactics."""
+            tactics = []
+            
+            # Map scam types to human-readable descriptions
+            if any('urgency' in t.lower() for t in scam_types):
+                tactics.append("urgency tactics")
+            if any('threat' in t.lower() for t in scam_types):
+                tactics.append("threats")
+            if any('credential' in t.lower() or 'otp' in t.lower() or 'password' in t.lower() for t in scam_types):
+                tactics.append("attempts to steal your login details")
+            if any('prize' in t.lower() or 'lottery' in t.lower() or 'winner' in t.lower() for t in scam_types):
+                tactics.append("fake prize/lottery claims")
+            if any('money' in t.lower() or 'transfer' in t.lower() or 'payment' in t.lower() for t in scam_types):
+                tactics.append("requests for money transfer")
+            if any('bank' in t.lower() or 'impersonation' in t.lower() for t in scam_types):
+                tactics.append("impersonation of a trusted organization")
+            if any('link' in t.lower() or 'phishing' in t.lower() for t in scam_types):
+                tactics.append("suspicious links")
+            if any('kyc' in t.lower() for t in scam_types):
+                tactics.append("fake KYC update requests")
+            if any('remote' in t.lower() or 'anydesk' in t.lower() or 'teamviewer' in t.lower() for t in scam_types):
+                tactics.append("remote access scam")
+            if any('legal' in t.lower() or 'arrest' in t.lower() or 'police' in t.lower() for t in scam_types):
+                tactics.append("fake legal threats")
+            
+            if not tactics:
+                tactics.append("suspicious patterns")
+            
+            return " and ".join(tactics[:3])  # Limit to 3 tactics for readability
+        
+        def get_warning_emoji(risk_level: str) -> str:
+            """Get appropriate emoji for risk level."""
+            return {
+                "critical": "🚨",
+                "high": "⚠️",
+                "medium": "⚡",
+                "low": "ℹ️",
+                "safe": "✅"
+            }.get(risk_level, "ℹ️")
+        
+        def get_risk_label(risk_level: str) -> str:
+            """Get human-readable risk label."""
+            return {
+                "critical": "Critical-risk",
+                "high": "High-risk",
+                "medium": "Medium-risk",
+                "low": "Low-risk",
+                "safe": "Safe"
+            }.get(risk_level, "Unknown")
+        
+        risk_level = get_risk_level(session.scam_confidence, session.scam_detected)
+        confidence_percent = int(session.scam_confidence * 100)
+        
+        # Build human-readable fraud warning with clear structure (single line)
+        if session.scam_detected:
+            emoji = get_warning_emoji(risk_level)
+            risk_label = get_risk_label(risk_level)
+            scam_desc = get_scam_description(session.scam_types)
+            
+            full_reply = (
+                f"{emoji} SCAM DETECTED: {risk_label} ({confidence_percent}% confidence). "
+                f"Tactics Used: {scam_desc.capitalize()}. "
+                f"Action: Don't click any links, don't share personal info—block and report immediately."
+            )
+        else:
+            full_reply = "✅ SAFE: No scam detected. This message appears to be legitimate."
+        
+        # Return response with human-readable fraud warning
+        return AgentResponse(
+            status="success",
+            reply=full_reply
+        )
         
     except Exception as e:
         print(f"Error processing message: {e}")
