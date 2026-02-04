@@ -129,14 +129,14 @@ class Message(BaseModel):
     Fields as per GUVI specification:
     - sender: "scammer" or "user"
     - text: Message content
-    - timestamp: ISO-8601 formatted timestamp
+    - timestamp: Epoch milliseconds (int) or ISO-8601 string
     """
     sender: str = Field(..., description="Message sender: 'scammer' or 'user'")
     text: str = Field(..., description="Message content")
-    timestamp: str = Field(
+    timestamp: Union[int, str] = Field(
         ..., 
-        description="ISO-8601 formatted timestamp (e.g., '2026-02-04T10:30:00Z')",
-        json_schema_extra={"example": "2026-02-04T10:30:00Z"}
+        description="Timestamp - epoch milliseconds (int) or ISO-8601 string",
+        json_schema_extra={"example": 1770211451232}
     )
 
 
@@ -182,7 +182,7 @@ class IncomingRequest(BaseModel):
                 "message": {
                     "sender": "scammer",
                     "text": "Your bank account has been blocked. Click here to verify.",
-                    "timestamp": "2026-02-04T10:30:00Z"
+                    "timestamp": 1770211451232
                 },
                 "conversationHistory": [],
                 "metadata": {
