@@ -14,6 +14,8 @@ import os
 import re
 import json
 import random
+import logging
+import time
 from enum import Enum
 from datetime import datetime
 from typing import Optional, Union
@@ -23,11 +25,21 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from openai import AsyncOpenAI
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("honeypot")
 
 # Load .env file from the same directory as this script
 load_dotenv(Path(__file__).parent / ".env")
@@ -1956,6 +1968,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Basic logging middleware
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        logger.info(f">>> {request.method} {request.url.path}")
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        logger.info(f"<<< {response.status_code} ({process_time:.3f}s)")
+        return response
+
+
+app.add_middleware(LoggingMiddleware)
+
+
+# Exception handler for validation errors
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    """Handle validation errors with a cleaner response format."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "status": "error",
+            "reply": "Invalid request format. Please check your request body.",
+            "scamDetected": False,
+            "error": "VALIDATION_ERROR",
+            "details": str(exc.errors())
+        }
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request, exc):
+    """Handle HTTP exceptions."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "reply": str(exc.detail),
+            "scamDetected": False,
+            "error": "HTTP_ERROR"
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle unexpected errors."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "reply": "An unexpected error occurred. Please try again.",
+            "scamDetected": False,
+            "error": "INTERNAL_ERROR"
+        }
+    )
 
 
 @app.get("/")
