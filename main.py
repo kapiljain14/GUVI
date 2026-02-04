@@ -1636,6 +1636,7 @@ Return ONLY the final response text, nothing else."""
         
         try:
             print(f"🤖 [GROQ API CALL] Agent Response Generation - Model: {self.model}")
+            print(f"🤖 [GROQ API CALL] Base URL: {self.client.base_url}")
             
             # Try with full prompt first
             response = ""
@@ -1646,10 +1647,18 @@ Return ONLY the final response text, nothing else."""
                     max_tokens=150,
                     temperature=0.7,
                 )
+                print(f"🤖 [GROQ DEBUG] Response object: {response_obj}")
+                print(f"🤖 [GROQ DEBUG] Choices: {response_obj.choices}")
+                if response_obj.choices:
+                    print(f"🤖 [GROQ DEBUG] Message: {response_obj.choices[0].message}")
                 response = response_obj.choices[0].message.content.strip() if response_obj.choices[0].message.content else ""
                 print(f"✅ [GROQ SUCCESS] Attempt 1 - Response received: {len(response)} chars")
+                if response:
+                    print(f"✅ [GROQ SUCCESS] Response: {response}")
             except Exception as e1:
                 print(f"⚠️ [GROQ RETRY] Attempt 1 failed: {e1}")
+                import traceback
+                traceback.print_exc()
             
             # If empty, try with simplified prompt
             if not response or len(response) < 5:
