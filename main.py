@@ -1578,8 +1578,17 @@ Remove scam/fraud words. Make it sound human, confused. 1-2 sentences. Return ON
                     response = message.content.strip() if message.content else ""
                     
                     # Check if response looks like reasoning artifact (not a real reply)
-                    reasoning_artifacts = ['we respond', 'so we', 'the response', 'i will respond', 'let me']
-                    is_artifact = response and any(a in response.lower() for a in reasoning_artifacts)
+                    reasoning_artifacts = [
+                        'we respond', 'so we', 'the response', 'i will respond', 'let me',
+                        'sentence', 'here is', 'that\'s', 'reply:', 'response:'
+                    ]
+                    bad_starts = ('So ', 'We ', 'The ', 'I will', 'Let me', 'That\'s', 'Here ')
+                    is_artifact = response and (
+                        any(a in response.lower() for a in reasoning_artifacts) or
+                        response.startswith(bad_starts) or
+                        len(response) < 15 or
+                        ':' in response[:15]
+                    )
                     
                     # If content is empty/artifact but reasoning exists, extract from reasoning
                     if (not response or is_artifact) and hasattr(message, 'reasoning') and message.reasoning:
@@ -2126,13 +2135,23 @@ async def process_message(
             print(f"[SESSION {request.sessionId}] Callback scheduled - scam engagement complete")
         
         # CRITICAL: Ensure reply is valid (GUVI rejects empty/malformed replies)
-        # Check for empty, too short, or reasoning artifacts
-        invalid_patterns = ['we respond', 'so we', 'the response', 'i will', 'let me', 'reasoning:', 'thinking:']
+        # Strip whitespace first
+        reply = reply.strip() if reply else ""
+        
+        # Check for reasoning artifacts and invalid patterns
+        invalid_patterns = [
+            'we respond', 'so we', 'the response', 'i will respond', 'let me respond',
+            'reasoning:', 'thinking:', 'sentence', 'reply:', 'response:',
+            'that\'s 1', 'that\'s 2', 'here is', 'here\'s the'
+        ]
+        bad_starts = ('So ', 'We ', 'The ', 'I will', 'Let me', 'That\'s', 'Here ', 'This is the', 'My response')
+        
         is_invalid = (
             not reply or 
-            len(reply.strip()) < 10 or
+            len(reply) < 15 or
             any(p in reply.lower() for p in invalid_patterns) or
-            reply.strip().startswith(('So ', 'We ', 'The ', 'I will', 'Let me'))
+            reply.startswith(bad_starts) or
+            ':' in reply[:20]  # Reasoning often has colons early
         )
         
         if is_invalid:
