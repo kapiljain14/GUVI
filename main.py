@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     
     # Keep-Alive Configuration (to prevent cold starts on free tier)
     SERVICE_URL: str = Field(default="https://guvi-honeypot-bb2g.onrender.com")
-    KEEP_ALIVE_INTERVAL: int = Field(default=45)  # Ping every 45 seconds
+    KEEP_ALIVE_INTERVAL: int = Field(default=840)  # Ping every 14 minutes (under 15min idle timeout)
     KEEP_ALIVE_STARTUP_DELAY: int = Field(default=10)  # Wait for startup before first ping
     ENABLE_KEEP_ALIVE: bool = Field(default=True)
     
