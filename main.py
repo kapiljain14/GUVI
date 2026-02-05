@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # Intelligence Configuration
     USE_LLM_INTELLIGENCE: bool = Field(default=True)
     
+    # Keep-Alive Configuration (to prevent cold starts on free tier)
+    SERVICE_URL: str = Field(default="https://guvi-honeypot-bb2g.onrender.com")
+    KEEP_ALIVE_INTERVAL: int = Field(default=45)  # Ping every 45 seconds
+    KEEP_ALIVE_STARTUP_DELAY: int = Field(default=10)  # Wait for startup before first ping
+    ENABLE_KEEP_ALIVE: bool = Field(default=True)
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -1873,9 +1879,49 @@ async def verify_api_key(x_api_key: str = Header(..., alias="x-api-key")):
 # FastAPI Application
 # ============================================================================
 
+async def keep_alive_task():
+    """
+    Background task to keep the service alive on free tier hosting.
+    Pings the health endpoint periodically to prevent cold starts.
+    Waits for startup to complete before starting pings.
+    """
+    import asyncio
+    
+    # Use SERVICE_URL if configured, otherwise use localhost
+    if settings.SERVICE_URL:
+        health_url = f"{settings.SERVICE_URL.rstrip('/')}/health"
+    else:
+        health_url = f"http://localhost:{settings.PORT}/health"
+    
+    # Wait for startup to complete before starting pings
+    logger.info(f"[KEEP-ALIVE] Waiting {settings.KEEP_ALIVE_STARTUP_DELAY}s for startup to complete...")
+    try:
+        await asyncio.sleep(settings.KEEP_ALIVE_STARTUP_DELAY)
+    except asyncio.CancelledError:
+        logger.info("[KEEP-ALIVE] Task cancelled during startup delay")
+        return
+    
+    logger.info(f"[KEEP-ALIVE] Started - pinging {health_url} every {settings.KEEP_ALIVE_INTERVAL}s")
+    
+    while True:
+        try:
+            # Wait first, then ping (so first ping is after 45 seconds)
+            await asyncio.sleep(settings.KEEP_ALIVE_INTERVAL)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(health_url, timeout=30)
+                logger.info(f"[KEEP-ALIVE] Ping successful: {response.status_code}")
+        except asyncio.CancelledError:
+            logger.info("[KEEP-ALIVE] Task cancelled, shutting down")
+            break
+        except Exception as e:
+            logger.warning(f"[KEEP-ALIVE] Ping failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
+    import asyncio
+    
     print("=" * 60)
     print("Honeypot API starting up...")
     print(f"  API Key: {'Configured' if settings.API_KEY != 'your-secret-api-key' else 'Using default'}")
@@ -1884,8 +1930,23 @@ async def lifespan(app: FastAPI):
     print(f"  LLM Intelligence: {'Enabled' if settings.USE_LLM_INTELLIGENCE else 'Disabled'}")
     print(f"  Scam Threshold: {settings.SCAM_THRESHOLD}")
     print(f"  LLM Thresholds: Low={settings.LLM_THRESHOLD_LOW}, High={settings.LLM_THRESHOLD_HIGH}")
+    print(f"  Keep-Alive: {'Enabled' if settings.ENABLE_KEEP_ALIVE else 'Disabled'}")
     print("=" * 60)
+    
+    # Start keep-alive background task
+    keep_alive = None
+    if settings.ENABLE_KEEP_ALIVE:
+        keep_alive = asyncio.create_task(keep_alive_task())
+    
     yield
+    
+    # Cancel keep-alive on shutdown
+    if keep_alive:
+        keep_alive.cancel()
+        try:
+            await keep_alive
+        except asyncio.CancelledError:
+            pass
     print("Honeypot API shutting down...")
 
 
